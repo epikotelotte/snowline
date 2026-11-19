@@ -962,25 +962,29 @@ export function gearRelief(item, N) {
       H[k] = h + (h < 0.02 ? noise(i * 0.09 + 7, j * 0.09 + 3, seed) * 0.02 : 0);
     }
   }
-  // Detail: how sharply the surface changes at each point. Outlines, seams, zips, baffles and lugs
-  // score high and glow; flat panels stay quiet.
+  // Detail: thin edge lines. Measure how sharply the surface changes, then keep only the crest
+  // of each edge (the point steeper than its neighbours across the edge), so outlines, seams,
+  // zips and baffles become crisp one-dot lines instead of wide glowing bands.
+  const G = new Float32Array(N * N), GX = new Float32Array(N * N), GY = new Float32Array(N * N);
+  for (let j = 1; j < N - 1; j++) {
+    for (let i = 1; i < N - 1; i++) {
+      const k = j * N + i, gx = (H[k + 1] - H[k - 1]) * 0.5, gy = (H[k + N] - H[k - N]) * 0.5;
+      GX[k] = gx; GY[k] = gy; G[k] = hypot(gx, gy);
+    }
+  }
   const D = new Float32Array(N * N);
-  for (let j = 1; j < N - 1; j++) {
-    for (let i = 1; i < N - 1; i++) {
-      const k = j * N + i;
-      const g = hypot(H[k + 1] - H[k - 1], H[k + N] - H[k - N]) * 0.5;
-      D[k] = H[k] > 0.03 || g > 0.03 ? sm(0.018, 0.06, g) : 0;
+  for (let j = 2; j < N - 2; j++) {
+    for (let i = 2; i < N - 2; i++) {
+      const k = j * N + i, g = G[k];
+      if (g < 0.012) continue;
+      // step one cell along the gradient direction (rounded to the 8 neighbours)
+      const di = Math.round(GX[k] / g), dj = Math.round(GY[k] / g);
+      const o = dj * N + di;
+      if (g < G[k + o] || g < G[k - o]) continue;
+      D[k] = sm(0.012, 0.045, g);
     }
   }
-  // widen the lines a touch so they stay readable as the object turns
-  const W = new Float32Array(N * N);
-  for (let j = 1; j < N - 1; j++) {
-    for (let i = 1; i < N - 1; i++) {
-      const k = j * N + i;
-      W[k] = max(D[k], 0.8 * max(D[k - 1], D[k + 1], D[k - N], D[k + N]));
-    }
-  }
-  const out = { H, D: W };
+  const out = { H, D };
   cache.set(item.id, out);
   return out;
 }

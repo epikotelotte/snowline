@@ -339,7 +339,7 @@ async function createStage(canvas) {
         // Gear: the product's outline and details glow in aurora colours; flat panels stay soft grey.
         float det = aDetail * uGear;
         float gHue = 0.48 - position.z / ${SPAN.toFixed(2)} * 0.55 + sin(position.x * 3.0 + uTime * 0.5) * 0.08;   // green at the base → pink at the top
-        c = mix(c, aurora(gHue) * 1.25 * shimmer, det);
+        c = mix(c, aurora(gHue) * 1.5 * shimmer, det);
         vColor = c;
 
         // Peaks fade out in a disc, routes in a long ribbon.
@@ -350,8 +350,9 @@ async function createStage(canvas) {
         // Fog and point size are relative to camera distance, so phones (camera further back) look the same.
         float depth = -mv.z / uDist;
         float fog = smoothstep(2.1, 0.67, depth);
-        vAlpha = edge * (0.7 + 0.3 * fog) * uDim * (1.0 - uGear * 0.45 * (1.0 - det));
-        gl_PointSize = uSize * uPR * (1.0 + line * 1.3 + m * 1.2 + tr * (0.8 + behind * 0.6) + walker * 3.0 + det * 0.9) * (0.72 / depth) * edge;
+        // Gear: flat panels recede to a faint dust so the crisp outline drawing leads.
+        vAlpha = edge * (0.7 + 0.3 * fog) * uDim * (1.0 - uGear * 0.62 * (1.0 - det));
+        gl_PointSize = uSize * uPR * (1.0 + line * 1.3 + m * 1.2 + tr * (0.8 + behind * 0.6) + walker * 3.0 + det * 0.55) * (0.72 / depth) * edge * (1.0 - uGear * 0.3);
       }`,
     fragmentShader: /* glsl */`
       varying vec3 vColor; varying float vAlpha;
