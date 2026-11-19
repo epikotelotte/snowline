@@ -1,0 +1,6 @@
+.DS_Store
+.claude/
+# reference screen recordings — private working material, not part of the site
+ref/
+# unused experiment (solid 3D gear models), kept locally only
+js/products.js

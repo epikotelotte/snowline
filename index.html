@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Snow Line</title>
+  <meta name="description" content="Snow Line — a quiet atlas of the world's high places: iconic peaks, great routes and the gear to walk them.">
+  <meta name="theme-color" content="#020203">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+  </script>
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <main class="viewer" data-i18n-aria="viewer" aria-label="Snow Line — peak viewer">
+    <div class="sky" aria-hidden="true"></div>
+    <canvas class="stage" id="stage" aria-hidden="true"></canvas>
+    <div class="stage-fallback" id="fallback" data-i18n="fallback" hidden>3D view unavailable. Check your connection and reload.</div>
+
+    <header class="topbar">
+      <span class="brand">snow <em>line</em></span>
+      <nav class="col nav" aria-label="Sections">
+        <button type="button" data-view="peaks" aria-current="true" data-i18n="peaks">Peaks</button>
+        <button type="button" data-view="routes" aria-current="false" data-i18n="routes">Routes</button>
+        <button type="button" data-view="gear" aria-current="false" data-i18n="gear">Gear</button>
+      </nav>
+      <p class="col intro"><span data-i18n="intro1">A quiet atlas of the world's high places.</span><br><span class="dim" data-i18n="intro2">Heights are approximate. Not for navigation.</span></p>
+      <div class="col settings">
+        <div class="units" role="group" aria-label="Units">
+          <button type="button" data-units="metric" aria-pressed="true" data-i18n="metres">Metres</button>
+          <span>/</span>
+          <button type="button" data-units="imperial" aria-pressed="false" data-i18n="feet">Feet</button>
+        </div>
+        <div class="langs" id="langs" role="group" data-i18n-aria="language" aria-label="Language"></div>
+      </div>
+    </header>
+
+    <div class="v-head">
+      <span class="label"><b class="sq"></b><span id="vHeadLabel">Iconic peaks</span></span>
+      <span class="label counter"><span id="vIndex">01</span> <span class="dim">/ <span id="vTotal">18</span></span></span>
+    </div>
+
+    <article class="v-text" id="vText" aria-live="polite">
+      <p class="label accent" id="vRange">Himalaya</p>
+      <h1 class="v-name" id="vName">Everest</h1>
+      <p class="v-local" id="vLocal">Sagarmāthā · Chomolungma</p>
+      <p class="v-alt"><span id="vAlt">8,849</span><small id="vUnit">m</small></p>
+      <p class="v-diff" id="vDiff" hidden></p>
+      <p class="v-desc" id="vDesc"></p>
+      <div class="v-lines" id="vLines" role="group" data-i18n-aria="productLines" aria-label="Product lines" hidden></div>
+      <div class="v-ctrl">
+        <button type="button" class="round" id="prevBtn" data-i18n-aria="prev" aria-label="Previous peak">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <button type="button" class="round" id="nextBtn" data-i18n-aria="next" aria-label="Next peak">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
+        <span class="hint" id="vHint">Drag to rotate · Scroll or ← → to browse</span>
+      </div>
+    </article>
+
+    <div class="ruler" id="ruler" aria-hidden="true"></div>
+
+    <dl class="v-meta" id="vMeta"></dl>
+
+    <div class="strip">
+      <div class="strip-head">
+        <span class="label"><b class="sq"></b><span data-i18n="index">Index</span></span>
+        <div class="filters" id="filters" role="group" aria-label="Filter peaks"></div>
+      </div>
+      <ol class="strip-list" id="strip"></ol>
+    </div>
+  </main>
+
+  <script src="js/data.js"></script>
+  <script src="js/i18n.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
