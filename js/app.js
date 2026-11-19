@@ -4,7 +4,10 @@
    · routes → a ribbon of terrain following the route's elevation profile,
               with the trail drawn as an aurora line and a light walking it. */
 
-import { gearRelief } from "./gearforms.js";
+/* Gear is still in progress: it appears only when the site runs on this Mac (localhost)
+   and is left out of the online version. */
+const GEAR_ON = ["localhost", "127.0.0.1", "[::1]", ""].includes(location.hostname) || location.hostname.endsWith(".localhost");
+const { gearRelief } = GEAR_ON ? await import("./gearforms.js") : { gearRelief: null };
 
 const { peaks, routes, brands } = window.ATLAS;
 const $ = (s) => document.querySelector(s);
@@ -25,7 +28,7 @@ const routesByRegion = [...routes].sort((a, b) => REGION_ORDER.indexOf(a.region)
 const routeNo = Object.fromEntries(routesByRegion.map((r, i) => [r.id, i + 1]));
 // Gear: every product line is an item ("brand/line"), carrying a reference to its brand.
 const gearItems = brands.flatMap((b, bi) => b.lines.map((l) => ({ ...l, lineId: l.id, id: `${b.id}/${l.id}`, brand: b, bi })));
-const viewFromHash = () => (location.hash === "#routes" ? "routes" : location.hash === "#gear" ? "gear" : "peaks");
+const viewFromHash = () => (location.hash === "#routes" ? "routes" : location.hash === "#gear" && GEAR_ON ? "gear" : "peaks");
 const state = {
   view: viewFromHash(),
   units: store.get("ta-units", "metric"),
@@ -891,6 +894,7 @@ document.querySelector(".units").addEventListener("click", (e) => {
   show(S().current, { instant: true, textOnly: true });
 });
 
+if (!GEAR_ON) document.querySelector('.nav [data-view="gear"]')?.remove();
 document.querySelector(".nav").addEventListener("click", (e) => {
   const b = e.target.closest("[data-view]");
   if (b && b.dataset.view !== state.view) setView(b.dataset.view);
