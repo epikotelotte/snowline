@@ -627,14 +627,22 @@ async function createStage(canvas) {
     currentGear = item.id;
   }
   function setRoute(rt, instant) {
-    wantRoute = rt;
-    if (!ROUTES_REAL) { routesReady.then(() => { if (wantRoute === rt) setRoute(rt, instant); }); return; }
+    if (!ROUTES_REAL) {
+      // real terrain still downloading: show the generated ribbon now, then rise into the real land
+      generatedRoute(rt, instant);
+      wantRoute = rt;
+      routesReady.then(() => { if (wantRoute === rt) setRoute(rt, false); });
+      return;
+    }
     if (ROUTES_REAL[rt.id]) {
       const R = realRoute(rt);
       setShape({ ...R, route: true }, instant);
       settle = -0.3;
       return;
     }
+    generatedRoute(rt, instant);
+  }
+  function generatedRoute(rt, instant) {
     const { H, top, trail, prog } = routeTerrain(rt);
     const ys = Math.min(0.55, Math.max(0.2, 0.18 + 0.32 * (top / 6000)));
     const contour = top < 900 ? 100 : top < 2500 ? 250 : 500;
