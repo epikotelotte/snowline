@@ -10,7 +10,10 @@ const TOUCH = matchMedia("(hover: none)").matches;
 
 /* ── text, in the visitor's language (same rule as the main page) ── */
 const I18N = window.I18N;
-const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } } };
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+};
 function lang() {
   const codes = I18N.langs.map((l) => l.code), saved = store.get("sl-lang", null);
   if (codes.includes(saved)) return saved;
@@ -19,10 +22,25 @@ function lang() {
 }
 const t = (k) => I18N.ui[lang()]?.[k] ?? I18N.ui.en[k];
 const imperial = () => store.get("ta-units", "metric") === "imperial";
+const langBox = root.querySelector("#eLangs");
 function applyText() {
+  const L = lang(), info = I18N.langs.find((l) => l.code === L);
   root.querySelectorAll("[data-e]").forEach((el) => { el.textContent = t(el.dataset.e); });
   root.querySelector("#eHint").textContent = t(TOUCH ? "entryHintTouch" : "entryHint");
+  root.setAttribute("lang", info.html);
+  langBox.setAttribute("aria-label", t("language"));
+  langBox.querySelectorAll("[data-lang]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.lang === L)));
 }
+langBox.innerHTML = I18N.langs.map((l) => `<button type="button" data-lang="${l.code}" lang="${l.html}">${l.label}</button>`).join("");
+// Switching language here switches the atlas behind too (app.js listens for "sl-lang").
+langBox.addEventListener("click", (e) => {
+  e.stopPropagation();   // a language change is not a choice of side
+  const b = e.target.closest("[data-lang]");
+  if (!b) return;
+  store.set("sl-lang", b.dataset.lang);
+  dispatchEvent(new CustomEvent("sl-lang", { detail: b.dataset.lang }));
+  applyText();
+});
 
 /* ── canvas ── */
 const c = root.querySelector("canvas"), x = c.getContext("2d");
@@ -174,10 +192,12 @@ function open() {
 addEventListener("resize", () => { if (!visible) return; size(); build(); kick(); });
 root.addEventListener("pointermove", (e) => {
   if (e.pointerType !== "mouse") return;
+  if (e.target.closest("#eLangs")) { mx = my = -1; side = 0; return; }   // a normal pointer over the language switch
   mx = e.clientX; my = e.clientY; side = my < lineY ? 1 : -1; kick();
 });
 root.addEventListener("pointerleave", () => { mx = my = -1; side = 0; });
 root.addEventListener("click", (e) => {
+  if (e.target.closest("#eLangs")) return;
   const b = e.target.closest("[data-go]");
   choose(b ? b.dataset.go : e.clientY < lineY ? "peaks" : "routes");
 });

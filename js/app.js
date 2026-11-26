@@ -1114,14 +1114,16 @@ function applyUnits() {
   renderStrip(); renderRuler();
 }
 
-$("#langs").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-lang]");
-  if (!b || b.dataset.lang === state.lang) return;
-  applyLang(b.dataset.lang);
+function switchLang(lang) {
+  if (!LANG_CODES.includes(lang) || lang === state.lang) return;
+  applyLang(lang);
   $("#vHint").textContent = t(state.view === "gear" ? "hintGear" : "hint");
   renderFilters(); renderStrip(); renderRuler();
   show(S().current, { instant: true, textOnly: true });
-});
+}
+$("#langs").addEventListener("click", (e) => { const b = e.target.closest("[data-lang]"); if (b) switchLang(b.dataset.lang); });
+// the entry page has its own switch; it tells the atlas behind it
+addEventListener("sl-lang", (e) => switchLang(e.detail));
 
 document.querySelector(".units").addEventListener("click", (e) => {
   const b = e.target.closest("[data-units]");
