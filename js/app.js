@@ -214,8 +214,8 @@ const REAL = await (async () => {
 const latOf = (p) => { const m = /([\d.]+)°\s*([NS])/.exec(p.coords); return m ? parseFloat(m[1]) * (m[2] === "S" ? -1 : 1) : 0; };
 // Rough permanent snow line by latitude (m): high in the tropics and the Himalaya, low near the poles.
 const snowLine = (lat) => { const a = Math.abs(lat); return lat < -60 ? 0 : a < 12 ? 4900 : a < 32 ? 5400 : a < 40 ? 4800 : a < 50 ? 3000 : a < 62 ? 1900 : 900; };
-function realTerrain(p) {
-  const t = REAL[p.id], S = t.size, H = new Float32Array(N * N);
+function realTerrain(p, t = REAL[p.id]) {
+  const S = t.size, H = new Float32Array(N * N);
   for (let j = 0; j < N; j++) {
     for (let i = 0; i < N; i++) {
       const u = (i / (N - 1)) * (S - 1), v = (j / (N - 1)) * (S - 1);
@@ -234,6 +234,52 @@ const realYs = (p) => { const t = REAL[p.id]; return Math.min(0.72, Math.max(0.3
 function realSnow(p) {
   const [lo, hi] = realRange(p), line = snowLine(latOf(p));
   return hi <= line ? 0 : Math.min(0.85, 1 - (line - lo) / (hi - lo));
+}
+
+/* Real routes (tools/fetch_routes.py + build_terrain.py → data/routes.*): the landscape around each
+   route's actual track from OpenStreetMap, turned so the route's long axis runs left to right.
+   Loaded in the background; until it arrives (or if it fails) routes use the generated ribbon. */
+let ROUTES_REAL = null;
+const routesReady = fetch("data/routes.json").then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+  .then((meta) => fetch("data/routes.bin").then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status))).then((bin) => {
+    const S = meta.size, all = new Uint16Array(bin);
+    ROUTES_REAL = Object.fromEntries(meta.routes.map((m, i) => [m.id, { ...m, size: S, h: all.subarray(i * S * S, (i + 1) * S * S) }]));
+  }))
+  .catch((err) => { ROUTES_REAL = {}; console.warn("Real route terrain unavailable; using generated ribbons", err); });
+
+const realRouteCache = new Map();
+function realRoute(r) {
+  if (realRouteCache.has(r.id)) return realRouteCache.get(r.id);
+  const t = ROUTES_REAL[r.id], H = realTerrain(r, t);
+  // The track glows: for every dot near it, its distance to the line and how far along the route it is.
+  const trail = new Float32Array(N * N), prog = new Float32Array(N * N), best = new Float32Array(N * N).fill(1);
+  const P = t.pts, cum = [0];
+  for (let s = 1; s < P.length; s++) cum.push(cum[s - 1] + Math.hypot(P[s][0] - P[s - 1][0], P[s][1] - P[s - 1][1]));
+  const total = cum[cum.length - 1] || 1, R = 0.04, g = (v) => ((v + 1) / 2) * (N - 1);
+  for (let s = 1; s < P.length; s++) {
+    const [ax, az] = P[s - 1], [bx, bz] = P[s], dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1e-9;
+    const i0 = Math.max(0, Math.floor(g(Math.min(ax, bx) - R))), i1 = Math.min(N - 1, Math.ceil(g(Math.max(ax, bx) + R)));
+    const j0 = Math.max(0, Math.floor(g(Math.min(az, bz) - R))), j1 = Math.min(N - 1, Math.ceil(g(Math.max(az, bz) + R)));
+    for (let j = j0; j <= j1; j++) {
+      const z = (j / (N - 1)) * 2 - 1;
+      for (let i = i0; i <= i1; i++) {
+        const x = (i / (N - 1)) * 2 - 1, f = clamp01(((x - ax) * dx + (z - az) * dz) / L2);
+        const d = Math.hypot(x - ax - f * dx, z - az - f * dz), k = j * N + i;
+        if (d < best[k]) { best[k] = d; prog[k] = (cum[s - 1] + f * (cum[s] - cum[s - 1])) / total; }
+      }
+    }
+  }
+  for (let k = 0; k < N * N; k++) trail[k] = 1 - smooth(0.012, 0.034, best[k]);
+  const relief = t.hi - t.lo, lat = t.lat;
+  const line = snowLine(lat), snow = t.hi <= line ? 0 : Math.min(0.85, 1 - (line - t.lo) / relief);
+  const out = {
+    H, trail, prog, top: t.hi, base: t.lo, band: t.band, snow,
+    // true proportions, exaggerated ×1.7 like the peaks, within limits (long trails are vast and flat)
+    ys: Math.min(0.5, Math.max(0.16, 1.7 * 2 * SPAN * relief / (2 * t.half * 1000))),
+    contour: relief < 400 ? 50 : relief < 1000 ? 100 : relief < 2500 ? 250 : 500
+  };
+  realRouteCache.set(r.id, out);
+  return out;
 }
 
 const STEEP = { pyramid: 1.4, spire: 1.5, wall: 1.2, volcano: 1, dome: 1, massif: 1, mesa: 1.3 };
@@ -346,14 +392,15 @@ async function createStage(canvas) {
     uWalk: { value: 0 },      // walker position along the route, 0..1
     uGear: { value: 0 },      // 1 = gear relief: wider edge fade so the whole object shows
     uDim: { value: 1 },       // overall point brightness
-    uObj: { value: 0 }        // 1 = dots on a 3D gear model (shade by facing, glow at the silhouette)
+    uObj: { value: 0 },       // 1 = dots on a 3D gear model (shade by facing, glow at the silhouette)
+    uBand: { value: 0.65 }    // route: how deep the visible band is (0..1 of the grid), wide for loops
   };
   const mat = new THREE.ShaderMaterial({
     uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */`
       attribute float aElev; attribute float aH; attribute float aRand; attribute float aEdge;
       attribute float aTrail; attribute float aProg; attribute float aDetail; attribute vec3 aNormal;
-      uniform float uPR, uSize, uAspect, uContour, uSnow, uTime, uDist, uRoute, uWalk, uGear, uDim, uObj; uniform vec2 uMouse;
+      uniform float uPR, uSize, uAspect, uContour, uSnow, uTime, uDist, uRoute, uWalk, uGear, uDim, uObj, uBand; uniform vec2 uMouse;
       varying vec3 vColor; varying float vAlpha;
 
       // Aurora palette, t in 0..1: green → teal → blue → violet → pink.
@@ -386,7 +433,7 @@ async function createStage(canvas) {
                   + sin(position.x * 2.6 + position.z * 1.4 + uTime * 0.5) * 0.12
                   + sin(uTime * 0.23) * 0.06;
         float shimmer = 0.8 + 0.2 * sin(uTime * 1.6 + aRand * 40.0);
-        c = mix(c, aurora(hue) * 1.15 * shimmer, line * (1.0 - 0.45 * uRoute));
+        c = mix(c, aurora(hue) * 1.15 * shimmer, line * (1.0 - 0.62 * uRoute));
         c = mix(c, aurora(hue + 0.3) * 1.05, m * 0.8);
 
         // Route: the trail glows along its length; the stretch just walked is brighter,
@@ -409,7 +456,7 @@ async function createStage(canvas) {
 
         // Peaks fade out in a disc, routes in a long ribbon.
         vec2 q = position.xz / ${SPAN.toFixed(2)};
-        float rect = (1.0 - smoothstep(0.4, 0.95, abs(q.y))) * (1.0 - smoothstep(0.88, 1.0, abs(q.x)));
+        float rect = (1.0 - smoothstep(uBand - 0.25, uBand + 0.3, abs(q.y))) * (1.0 - smoothstep(0.88, 1.0, abs(q.x)));
         float wide = 1.0 - smoothstep(0.82, 1.0, length(q));
         float edge = mix(mix(aEdge, rect, uRoute), wide, uGear);
         // Fog and point size are relative to camera distance, so phones (camera further back) look the same.
@@ -417,7 +464,7 @@ async function createStage(canvas) {
         float fog = smoothstep(2.1, 0.67, depth);
         // Gear: flat panels recede to a faint dust so the crisp outline drawing leads.
         vAlpha = edge * (0.7 + 0.3 * fog) * uDim * (1.0 - uGear * 0.62 * (1.0 - det)) * (lit + rim * 0.8);
-        gl_PointSize = uSize * uPR * (1.0 + line * 1.3 + m * 1.2 + tr * (0.8 + behind * 0.6) + walker * 3.0 + det * 0.55) * (0.72 / depth) * edge * (1.0 - uGear * 0.3);
+        gl_PointSize = uSize * uPR * (1.0 + line * (1.3 - 0.7 * uRoute) + m * 1.2 + tr * (1.1 + behind * 0.6) + walker * 3.0 + det * 0.55) * (0.72 / depth) * edge * (1.0 - uGear * 0.3);
       }`,
     fragmentShader: /* glsl */`
       varying vec3 vColor; varying float vAlpha;
@@ -435,10 +482,14 @@ async function createStage(canvas) {
   const from = mk(), to = mk();
   let morph = null, routeMode = false, walkT0 = performance.now(), spin = 0.08, tilt = 0;
   let faceFront = false;   // gear: sway gently around a front view instead of turning edge-on
+  let settle = null;       // routes: turn side-on (long axis left to right) when a route opens
   let peakContour = 500;
+  let wantRoute = null;    // the route waiting for its real terrain to load
 
   // obj (optional) = { X, Y, Z, NX, NY, NZ, H, D }: dots placed on a 3D model instead of a terrain grid
-  function setShape({ H, top, ys, snow, contour, trail, prog, route, detail = ZEROS, obj = null, base = 0 }, instant) {
+  function setShape({ H, top, ys, snow, contour, trail, prog, route, detail = ZEROS, obj = null, base = 0, band = 0.65 }, instant) {
+    wantRoute = null;
+    settle = null;
     for (let k = 0; k < count; k++) {
       from.x[k] = pos[k * 3]; from.y[k] = pos[k * 3 + 1]; from.z[k] = pos[k * 3 + 2];
       from.e[k] = elev[k]; from.h[k] = hNorm[k]; from.d[k] = detA[k];
@@ -469,7 +520,8 @@ async function createStage(canvas) {
       route0: uniforms.uRoute.value, route1: route ? 1 : 0,
       gear0: uniforms.uGear.value, gear1: 0,
       dim0: uniforms.uDim.value, dim1: 1,
-      obj0: uniforms.uObj.value, obj1: obj ? 1 : 0
+      obj0: uniforms.uObj.value, obj1: obj ? 1 : 0,
+      band0: uniforms.uBand.value, band1: band
     };
     currentGear = null;
   }
@@ -572,6 +624,14 @@ async function createStage(canvas) {
     currentGear = item.id;
   }
   function setRoute(rt, instant) {
+    wantRoute = rt;
+    if (!ROUTES_REAL) { routesReady.then(() => { if (wantRoute === rt) setRoute(rt, instant); }); return; }
+    if (ROUTES_REAL[rt.id]) {
+      const R = realRoute(rt);
+      setShape({ ...R, route: true }, instant);
+      settle = -0.3;
+      return;
+    }
     const { H, top, trail, prog } = routeTerrain(rt);
     const ys = Math.min(0.55, Math.max(0.2, 0.18 + 0.32 * (top / 6000)));
     const contour = top < 900 ? 100 : top < 2500 ? 250 : 500;
@@ -597,6 +657,7 @@ async function createStage(canvas) {
     uniforms.uGear.value = morph.gear0 + (morph.gear1 - morph.gear0) * eT;
     uniforms.uDim.value = morph.dim0 + (morph.dim1 - morph.dim0) * eT;
     uniforms.uObj.value = morph.obj0 + (morph.obj1 - morph.obj0) * eT;
+    uniforms.uBand.value = morph.band0 + (morph.band1 - morph.band0) * eT;
     geo.attributes.position.needsUpdate = true;
     geo.attributes.aElev.needsUpdate = true;
     geo.attributes.aH.needsUpdate = true;
@@ -640,7 +701,7 @@ async function createStage(canvas) {
   // Drag to rotate, with inertia; slow auto-rotation when idle.
   let rotV = 0, dragging = false, lastX = 0, idleAt = 0;
   group.rotation.y = -0.5;
-  canvas.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener("pointerdown", (e) => { dragging = true; settle = null; lastX = e.clientX; canvas.setPointerCapture(e.pointerId); });
   canvas.addEventListener("pointermove", (e) => {
     const rect = canvas.getBoundingClientRect();
     uniforms.uMouse.value.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -(((e.clientY - rect.top) / rect.height) * 2 - 1));
@@ -671,6 +732,10 @@ async function createStage(canvas) {
           const diff = ((target - group.rotation.y + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
           group.rotation.y += diff * Math.min(1, dt * 1.4);
         }
+      } else if (settle !== null) {
+        const diff = ((settle - group.rotation.y + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+        group.rotation.y += diff * Math.min(1, dt * 2.2);
+        if (Math.abs(diff) < 0.01) { settle = null; idleAt = now; }
       } else if (!REDUCED && now - idleAt > 1500) group.rotation.y += dt * spin;
     }
     group.rotation.x += (tilt - group.rotation.x) * Math.min(1, dt * 3);
@@ -997,7 +1062,8 @@ function setView(view, { instant = false } = {}) {
   state.view = view;
   $(".viewer").dataset.view = view;
   document.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-current", String(b.dataset.view === view)));
-  try { history.replaceState(null, "", view === "peaks" ? location.pathname + location.search : "#" + view); } catch { /* file:// */ }
+  // (while the entry page is open the address stays bare, so reloading shows the entry again)
+  if (document.getElementById("entry")?.hidden !== false) { try { history.replaceState(null, "", "#" + view); } catch { /* file:// */ } }
   $("#vHint").textContent = t(view === "gear" ? "hintGear" : "hint");
   renderFilters(); renderStrip();
   show(S().current, { instant });

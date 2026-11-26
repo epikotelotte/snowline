@@ -9,6 +9,12 @@ Output (loaded by js/app.js):
   data/terrain.bin   one Uint16 grid per peak (0 = lowest point in the window, 65535 = summit)
   data/terrain.json  per peak: id, window half-size in km, lowest and highest DEM elevation (m)
 
+Routes (tracks from tools/fetch_routes.py → data/tracks.json): a window around the whole track,
+turned so the route's long axis runs left to right (start on the left), resampled the same way.
+  data/routes.bin    one Uint16 grid per route
+  data/routes.json   per route: id, window half-size (km), band (visible depth, 0..1), lo, hi,
+                     and the track in window coordinates (x, z in -1..1; z = -1 is the far edge)
+
 Run with Blender's Python (for PNG decoding and numpy):
   /Applications/Blender.app/Contents/MacOS/Blender -b --factory-startup -P tools/build_terrain.py -- <tile cache dir>
 """
@@ -117,7 +123,7 @@ def grid(at, lat0, lon0, half_km, n):
 
 def zoom_for(lat, half_km):
     target = half_km * 2000 / OUT            # metres per output cell
-    for z in range(9, 14):
+    for z in range(2, 14):
         if 156543.03 * math.cos(math.radians(lat)) / 2 ** z <= target * 0.75:
             return z
     return 13
@@ -157,3 +163,84 @@ with open(os.path.join(ROOT, "data", "terrain.json"), "w") as f:
     json.dump({"size": OUT, "source": "AWS Terrain Tiles (Mapzen Terrarium): SRTM, USGS 3DEP, GMTED2010, ETOPO1 and others",
                "peaks": meta}, f, separators=(",", ":"))
 print("WROTE", len(meta), "peaks,", len(blob), "bytes;", len(tiles), "tiles")
+
+
+# ───────── routes ─────────
+FLOOR = {"jordantrail": -430}      # sea level is the floor (no sea bed), except beside the Dead Sea
+
+
+def simplify_xy(pts, tol):
+    """Douglas–Peucker on window coordinates."""
+    if len(pts) < 3:
+        return pts
+    keep = [False] * len(pts)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        i, j = stack.pop()
+        a, b = np.array(pts[i]), np.array(pts[j])
+        seg = np.array(pts[i + 1:j])
+        if len(seg) == 0:
+            continue
+        ab = b - a
+        L2 = float(ab @ ab)
+        t = np.clip(((seg - a) @ ab) / L2, 0, 1) if L2 > 1e-12 else np.zeros(len(seg))
+        d = np.linalg.norm(seg - (a + t[:, None] * ab), axis=1)
+        k = int(np.argmax(d))
+        if d[k] > tol:
+            keep[i + 1 + k] = True
+            stack += [(i, i + 1 + k), (i + 1 + k, j)]
+    return [p for p, k in zip(pts, keep) if k]
+
+
+with open(os.path.join(ROOT, "data", "tracks.json")) as f:
+    tracks = json.load(f)
+rmeta, rblob = [], bytearray()
+for rid, tr in tracks.items():
+    ll = np.array(tr["pts"], dtype=np.float64)
+    lat0, lon0 = float(ll[:, 0].mean()), float(ll[:, 1].mean())
+    kx = 111.32 * math.cos(math.radians(lat0))
+    xy = np.stack([(ll[:, 1] - lon0) * kx, (ll[:, 0] - lat0) * 110.57], axis=1)       # km, x east, y north
+    # long axis of the track (principal component), start on the left
+    seg = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+    w = np.concatenate([[0], seg]) + np.concatenate([seg, [0]])
+    m = (xy * w[:, None]).sum(0) / w.sum()
+    c = xy - m
+    sxx, syy, sxy = (w * c[:, 0] ** 2).sum(), (w * c[:, 1] ** 2).sum(), (w * c[:, 0] * c[:, 1]).sum()
+    th = 0.5 * math.atan2(2 * sxy, sxx - syy)
+    u = xy[:, 0] * math.cos(th) + xy[:, 1] * math.sin(th)
+    span = float(u.max() - u.min())
+    if u[0] - u[-1] > 0.1 * span:
+        th += math.pi
+    ct, st = math.cos(th), math.sin(th)
+    u = xy[:, 0] * ct + xy[:, 1] * st
+    v = -xy[:, 0] * st + xy[:, 1] * ct
+    uc, vc = (u.max() + u.min()) / 2, (v.max() + v.min()) / 2
+    hu, hv = (u.max() - u.min()) / 2, (v.max() - v.min()) / 2
+    half = max(hu / 0.8, hv / 0.82, 2.2)
+    band = float(min(1.0, max(0.5, hv / half + 0.2)))
+    cx, cy = uc * ct - vc * st, uc * st + vc * ct                     # window centre, km
+    # grid: column i → u from -half to +half, row j → v from +half (far) to -half (near)
+    t = np.arange(OUT) / (OUT - 1) * 2 - 1
+    gu, gv = np.meshgrid(t * half, -t * half)
+    gx, gy = gu * ct - gv * st + cx, gu * st + gv * ct + cy
+    glat, glon = lat0 + gy / 110.57, lon0 + gx / kx
+    clat, clon = lat0 + cy / 110.57, lon0 + cx / kx
+    z = zoom_for(clat, half)
+    at = sampler(clat, clon, half * 1.45, z)
+    e = np.maximum(at(glat, glon), FLOOR.get(rid, 0.0))
+    lo, hi = float(e.min()), float(e.max())
+    h = np.clip((e - lo) / max(1.0, hi - lo), 0, 1)
+    rblob += (np.round(h * 65535).astype("<u2")).tobytes()
+    px, pz = (u - uc) / half, -(v - vc) / half
+    pts = simplify_xy([[float(a), float(b)] for a, b in zip(px, pz)], 0.0025)
+    rmeta.append({"id": rid, "half": round(half, 2), "band": round(band, 3), "lo": round(lo), "hi": round(hi),
+                  "lat": round(clat, 3), "src": tr["src"], "pts": [[round(a, 4), round(b, 4)] for a, b in pts]})
+    print(f"{rid:14s} z{z} half={half:7.1f} km band {band:.2f}  {lo:6.0f}–{hi:5.0f} m  {len(pts)} pts")
+
+with open(os.path.join(ROOT, "data", "routes.bin"), "wb") as f:
+    f.write(rblob)
+with open(os.path.join(ROOT, "data", "routes.json"), "w") as f:
+    json.dump({"size": OUT, "source": "Tracks: © OpenStreetMap contributors (ODbL). Terrain: AWS Terrain Tiles", "routes": rmeta},
+              f, separators=(",", ":"))
+print("WROTE", len(rmeta), "routes,", len(rblob), "bytes;", len(tiles), "tiles in total")
