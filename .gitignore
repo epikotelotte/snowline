@@ -4,3 +4,6 @@
 ref/
 # unused experiment (solid 3D gear models), kept locally only
 js/products.js
+# Gear is local-only for now: Blender model scripts, renders and exported models stay off the public repo
+blender/
+models/

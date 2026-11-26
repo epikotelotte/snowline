@@ -8,6 +8,14 @@
    and is left out of the online version. */
 const GEAR_ON = ["localhost", "127.0.0.1", "[::1]", ""].includes(location.hostname) || location.hostname.endsWith(".localhost");
 const { gearRelief } = GEAR_ON ? await import("./gearforms.js") : { gearRelief: null };
+// Product lines modelled in Blender (blender/*.py → models/gear/*.glb). Others use their dot relief.
+const GEAR_MODELS = {
+  "arcteryx/alpha": "models/gear/arcteryx-alpha.glb",
+  "lasportiva/nepal": "models/gear/lasportiva-nepal.glb",
+  "osprey/atmos": "models/gear/osprey-atmos.glb"
+};
+// Parts drawn as glowing detail lines (zips, laces, straps, bindings…); everything else is surface.
+const TRIM = /zip|puller|slider|garage|dart|binding|ridge|brim|toggle|cord|lace|eyelet|hook|eyestay|pleat|loop|edge|strap|buckle|frame|web|compression|haul/i;
 
 const { peaks, routes, brands } = window.ATLAS;
 const $ = (s) => document.querySelector(s);
@@ -131,6 +139,11 @@ const CENTERS = {
 const terrainCache = new Map();
 function terrain(p) {
   if (terrainCache.has(p.id)) return terrainCache.get(p.id);
+  if (REAL[p.id]) {
+    const H = realTerrain(p);
+    terrainCache.set(p.id, H);
+    return H;
+  }
   const n = valueNoise(p.id), n2 = valueNoise(p.id + "f");
   const H = new Float32Array(N * N);
   const tw = rng(p.id + "tw")() * Math.PI;
@@ -182,6 +195,47 @@ function terrain(p) {
   terrainCache.set(p.id, H);
   return H;
 }
+/* Real terrain (tools/build_terrain.py → data/terrain.*): every peak's true shape from elevation
+   data (AWS Terrain Tiles: SRTM, USGS 3DEP and others), centred on its summit. Each grid runs from
+   the lowest point in the window (0) to the summit (65535); row 0 is north, column 0 west.
+   If the file can't be loaded, peaks fall back to the generated shapes below. */
+const REAL = await (async () => {
+  try {
+    const [meta, bin] = await Promise.all([
+      fetch("data/terrain.json").then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
+      fetch("data/terrain.bin").then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))]);
+    const S = meta.size, all = new Uint16Array(bin);
+    return Object.fromEntries(meta.peaks.map((m, i) => [m.id, { ...m, size: S, h: all.subarray(i * S * S, (i + 1) * S * S) }]));
+  } catch (err) {
+    console.warn("Real terrain unavailable; using generated shapes", err);
+    return {};
+  }
+})();
+const latOf = (p) => { const m = /([\d.]+)°\s*([NS])/.exec(p.coords); return m ? parseFloat(m[1]) * (m[2] === "S" ? -1 : 1) : 0; };
+// Rough permanent snow line by latitude (m): high in the tropics and the Himalaya, low near the poles.
+const snowLine = (lat) => { const a = Math.abs(lat); return lat < -60 ? 0 : a < 12 ? 4900 : a < 32 ? 5400 : a < 40 ? 4800 : a < 50 ? 3000 : a < 62 ? 1900 : 900; };
+function realTerrain(p) {
+  const t = REAL[p.id], S = t.size, H = new Float32Array(N * N);
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const u = (i / (N - 1)) * (S - 1), v = (j / (N - 1)) * (S - 1);
+      const iu = Math.min(S - 2, Math.floor(u)), iv = Math.min(S - 2, Math.floor(v)), fu = u - iu, fv = v - iv;
+      const a = t.h[iv * S + iu], b = t.h[iv * S + iu + 1], c = t.h[(iv + 1) * S + iu], d = t.h[(iv + 1) * S + iu + 1];
+      H[j * N + i] = (a * (1 - fu) * (1 - fv) + b * fu * (1 - fv) + c * (1 - fu) * fv + d * fu * fv) / 65535;
+    }
+  }
+  return H;
+}
+// Elevation data smooths sharp summits, so shift it to make the centre summit read its official height.
+// (A higher neighbour in the window, e.g. Everest beside Lhotse, keeps its true relative height.)
+const realRange = (p) => { const t = REAL[p.id], shift = p.alt - t.c; return [t.lo + shift, t.hi + shift]; };
+// Height of the real relief on screen: true proportions, exaggerated ×1.7 (broad volcanoes read flat otherwise), within limits.
+const realYs = (p) => { const t = REAL[p.id]; return Math.min(0.72, Math.max(0.32, 1.7 * 2 * SPAN * (t.hi - t.lo) / (2 * t.half * 1000))); };
+function realSnow(p) {
+  const [lo, hi] = realRange(p), line = snowLine(latOf(p));
+  return hi <= line ? 0 : Math.min(0.85, 1 - (line - lo) / (hi - lo));
+}
+
 const STEEP = { pyramid: 1.4, spire: 1.5, wall: 1.2, volcano: 1, dome: 1, massif: 1, mesa: 1.3 };
 const yScale = (p) => Math.min(0.7, (0.16 + 0.42 * (p.alt / 8849)) * STEEP[p.shape]);
 const snowFrac = (alt) => (alt < 3000 ? 0 : Math.min(0.42, Math.max(0.12, ((alt - 2500) / 8849) * 0.75)));
@@ -252,6 +306,7 @@ async function createStage(canvas) {
   const trailA = new Float32Array(count);  // 1 on the trail (routes only)
   const progA = new Float32Array(count);   // 0..1 progress along the route
   const detA = new Float32Array(count);    // 0..1 gear detail glow (outlines, seams, zips)
+  const normA = new Float32Array(count * 3);   // surface normal (gear models only)
   const r = rng("points");
   const step = (2 * SPAN) / (N - 1);
   for (let j = 0, k = 0; j < N; j++) {
@@ -275,6 +330,7 @@ async function createStage(canvas) {
   geo.setAttribute("aTrail", dyn(trailA, 1));
   geo.setAttribute("aProg", dyn(progA, 1));
   geo.setAttribute("aDetail", dyn(detA, 1));
+  geo.setAttribute("aNormal", dyn(normA, 3));
 
 
   const uniforms = {
@@ -289,14 +345,15 @@ async function createStage(canvas) {
     uRoute: { value: 0 },     // 0 = peak shape, 1 = route ribbon (animated between)
     uWalk: { value: 0 },      // walker position along the route, 0..1
     uGear: { value: 0 },      // 1 = gear relief: wider edge fade so the whole object shows
-    uDim: { value: 1 }        // overall point brightness
+    uDim: { value: 1 },       // overall point brightness
+    uObj: { value: 0 }        // 1 = dots on a 3D gear model (shade by facing, glow at the silhouette)
   };
   const mat = new THREE.ShaderMaterial({
     uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */`
       attribute float aElev; attribute float aH; attribute float aRand; attribute float aEdge;
-      attribute float aTrail; attribute float aProg; attribute float aDetail;
-      uniform float uPR, uSize, uAspect, uContour, uSnow, uTime, uDist, uRoute, uWalk, uGear, uDim; uniform vec2 uMouse;
+      attribute float aTrail; attribute float aProg; attribute float aDetail; attribute vec3 aNormal;
+      uniform float uPR, uSize, uAspect, uContour, uSnow, uTime, uDist, uRoute, uWalk, uGear, uDim, uObj; uniform vec2 uMouse;
       varying vec3 vColor; varying float vAlpha;
 
       // Aurora palette, t in 0..1: green → teal → blue → violet → pink.
@@ -341,8 +398,13 @@ async function createStage(canvas) {
         c = mix(c, vec3(1.0), walker);
         // Gear: the product's outline and details glow in aurora colours; flat panels stay soft grey.
         float det = aDetail * uGear;
-        float gHue = 0.48 - position.z / ${SPAN.toFixed(2)} * 0.55 + sin(position.x * 3.0 + uTime * 0.5) * 0.08;   // green at the base → pink at the top
-        c = mix(c, aurora(gHue) * 1.5 * shimmer, det);
+        float up = mix(-position.z / ${SPAN.toFixed(2)}, position.y * 1.1 - 0.35, uObj);   // relief: depth is "up"; model: height
+        float gHue = 0.48 + up * 0.55 + sin(position.x * 3.0 + uTime * 0.5) * 0.08;   // green at the base → pink at the top
+        // 3D models: dots facing the camera read as surface, the far side fades, the silhouette glows
+        float facing = dot(normalize(normalMatrix * aNormal), normalize(-mv.xyz));
+        float rim = pow(1.0 - abs(facing), 3.0) * uObj;
+        float lit = mix(1.0, 0.2 + 0.8 * smoothstep(-0.25, 0.6, facing), uObj);
+        c = mix(c, aurora(gHue) * 1.5 * shimmer, max(det, rim * 0.7));
         vColor = c;
 
         // Peaks fade out in a disc, routes in a long ribbon.
@@ -354,7 +416,7 @@ async function createStage(canvas) {
         float depth = -mv.z / uDist;
         float fog = smoothstep(2.1, 0.67, depth);
         // Gear: flat panels recede to a faint dust so the crisp outline drawing leads.
-        vAlpha = edge * (0.7 + 0.3 * fog) * uDim * (1.0 - uGear * 0.62 * (1.0 - det));
+        vAlpha = edge * (0.7 + 0.3 * fog) * uDim * (1.0 - uGear * 0.62 * (1.0 - det)) * (lit + rim * 0.8);
         gl_PointSize = uSize * uPR * (1.0 + line * 1.3 + m * 1.2 + tr * (0.8 + behind * 0.6) + walker * 3.0 + det * 0.55) * (0.72 / depth) * edge * (1.0 - uGear * 0.3);
       }`,
     fragmentShader: /* glsl */`
@@ -375,13 +437,22 @@ async function createStage(canvas) {
   let faceFront = false;   // gear: sway gently around a front view instead of turning edge-on
   let peakContour = 500;
 
-  function setShape({ H, top, ys, snow, contour, trail, prog, route, detail = ZEROS }, instant) {
+  // obj (optional) = { X, Y, Z, NX, NY, NZ, H, D }: dots placed on a 3D model instead of a terrain grid
+  function setShape({ H, top, ys, snow, contour, trail, prog, route, detail = ZEROS, obj = null, base = 0 }, instant) {
     for (let k = 0; k < count; k++) {
       from.x[k] = pos[k * 3]; from.y[k] = pos[k * 3 + 1]; from.z[k] = pos[k * 3 + 2];
-      from.e[k] = elev[k]; from.h[k] = hNorm[k]; from.d[k] = detA[k]; to.d[k] = detail[k];
-      to.x[k] = baseX[k]; to.y[k] = H[k] * ys; to.z[k] = baseZ[k];
-      to.e[k] = H[k] * top; to.h[k] = H[k];
+      from.e[k] = elev[k]; from.h[k] = hNorm[k]; from.d[k] = detA[k];
+      if (obj) {
+        to.x[k] = obj.X[k]; to.y[k] = obj.Y[k]; to.z[k] = obj.Z[k];
+        to.h[k] = obj.H[k]; to.e[k] = obj.H[k] * top; to.d[k] = obj.D[k];
+        normA[k * 3] = obj.NX[k]; normA[k * 3 + 1] = obj.NY[k]; normA[k * 3 + 2] = obj.NZ[k];
+      } else {
+        to.x[k] = baseX[k]; to.y[k] = H[k] * ys; to.z[k] = baseZ[k];
+        to.e[k] = base + H[k] * (top - base); to.h[k] = H[k]; to.d[k] = detail[k];
+        normA[k * 3] = 0; normA[k * 3 + 1] = 1; normA[k * 3 + 2] = 0;
+      }
     }
+    geo.attributes.aNormal.needsUpdate = true;
     trailA.set(trail); progA.set(prog);
     geo.attributes.aTrail.needsUpdate = true;
     geo.attributes.aProg.needsUpdate = true;
@@ -397,20 +468,108 @@ async function createStage(canvas) {
       snow0: uniforms.uSnow.value, snow1: snow,
       route0: uniforms.uRoute.value, route1: route ? 1 : 0,
       gear0: uniforms.uGear.value, gear1: 0,
-      dim0: uniforms.uDim.value, dim1: 1
+      dim0: uniforms.uDim.value, dim1: 1,
+      obj0: uniforms.uObj.value, obj1: obj ? 1 : 0
     };
+    currentGear = null;
   }
 
   function setPeak(p, instant) {
-    setShape({ H: terrain(p), top: p.alt, ys: yScale(p), snow: snowFrac(p.alt), contour: peakContour, trail: ZEROS, prog: ZEROS, route: false }, instant);
+    const real = REAL[p.id], [lo, hi] = real ? realRange(p) : [0, p.alt];
+    setShape({ H: terrain(p), top: hi, base: lo, ys: real ? realYs(p) : yScale(p),
+      snow: real ? realSnow(p) : snowFrac(p.alt), contour: peakContour, trail: ZEROS, prog: ZEROS, route: false }, instant);
   }
+  /* Gear models: load the .glb, then scatter every dot over its surfaces (weighted by area, with
+     extra dots on trims so zips, laces and straps read as lines). Cached per product line. */
+  const modelDots = new Map();
+  let currentGear = null, gltfLoader = null, Sampler = null;
+  async function loadModelDots(id) {
+    if (modelDots.has(id)) return modelDots.get(id);
+    if (!gltfLoader) {
+      const [{ GLTFLoader }, { MeshSurfaceSampler }] = await Promise.all([
+        import("three/addons/loaders/GLTFLoader.js"), import("three/addons/math/MeshSurfaceSampler.js")]);
+      gltfLoader = new GLTFLoader(); Sampler = MeshSurfaceSampler;
+    }
+    const gltf = await gltfLoader.loadAsync(GEAR_MODELS[id]);
+    gltf.scene.updateMatrixWorld(true);
+    const parts = [];
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    gltf.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry;
+      const p = g.attributes.position;
+      let area = 0;
+      for (let i = 0; i < p.count; i += 3) {
+        a.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld);
+        b.fromBufferAttribute(p, i + 1).applyMatrix4(o.matrixWorld);
+        c.fromBufferAttribute(p, i + 2).applyMatrix4(o.matrixWorld);
+        area += b.sub(a).cross(c.sub(a)).length() / 2;
+      }
+      const trim = TRIM.test(o.name);
+      parts.push({ mesh: o, trim, weight: area * (trim ? 3.5 : 1) });
+    });
+    const total = parts.reduce((s, q) => s + q.weight, 0);
+    let left = count;
+    parts.forEach((q, i) => { q.n = i === parts.length - 1 ? left : Math.round(count * q.weight / total); left -= q.n; });
+    const raw = new Float32Array(count * 3), nrm = new Float32Array(count * 3), D = new Float32Array(count);
+    const pv = new THREE.Vector3(), nv = new THREE.Vector3(), nm = new THREE.Matrix3();
+    let k = 0;
+    for (const q of parts) {
+      const sampler = new Sampler(q.mesh).build();
+      nm.getNormalMatrix(q.mesh.matrixWorld);
+      for (let i = 0; i < q.n && k < count; i++, k++) {
+        sampler.sample(pv, nv);
+        pv.applyMatrix4(q.mesh.matrixWorld); nv.applyMatrix3(nm).normalize();
+        raw.set([pv.x, pv.y, pv.z], k * 3); nrm.set([nv.x, nv.y, nv.z], k * 3);
+        D[k] = q.trim ? 1 : 0;
+      }
+    }
+    // shuffle so the morph's per-dot delays spread evenly over the whole object
+    const order = Array.from({ length: count }, (_, i) => i);
+    const rr = rng(id + "order");
+    for (let i = count - 1; i > 0; i--) { const j = Math.floor(rr() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    // centre on the camera's focus and scale so the product fits the stage (1.45 units on its longest side)
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < count; i++) for (let d = 0; d < 3; d++) { const v = raw[i * 3 + d]; if (v < lo[d]) lo[d] = v; if (v > hi[d]) hi[d] = v; }
+    const sc = 1.45 / Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+    const cx = (lo[0] + hi[0]) / 2, cy = (lo[1] + hi[1]) / 2, cz = (lo[2] + hi[2]) / 2;
+    const out = { X: new Float32Array(count), Y: new Float32Array(count), Z: new Float32Array(count),
+      NX: new Float32Array(count), NY: new Float32Array(count), NZ: new Float32Array(count), H: new Float32Array(count), D: new Float32Array(count) };
+    for (let i = 0; i < count; i++) {
+      const s0 = order[i];
+      out.X[i] = (raw[s0 * 3] - cx) * sc;
+      out.Y[i] = (raw[s0 * 3 + 1] - cy) * sc + 0.1;
+      out.Z[i] = (raw[s0 * 3 + 2] - cz) * sc;
+      out.NX[i] = nrm[s0 * 3]; out.NY[i] = nrm[s0 * 3 + 1]; out.NZ[i] = nrm[s0 * 3 + 2];
+      out.H[i] = (raw[s0 * 3 + 1] - lo[1]) / (hi[1] - lo[1]);
+      out.D[i] = D[s0];
+    }
+    modelDots.set(id, out);
+    return out;
+  }
+
   function setGear(item, instant) {
+    const model = modelDots.get(item.id);
+    if (model) {
+      setShape({ H: ZEROS, top: 1000, ys: 0, snow: 0, contour: 1e6, trail: ZEROS, prog: ZEROS, route: false, obj: model }, instant);
+      currentGear = item.id;
+      faceFront = true;
+      applyLayout();
+      tilt = 0;      // a real 3D object: stand it upright
+      morph.gear1 = 1;
+      return;
+    }
+    if (GEAR_MODELS[item.id]) {
+      // show the relief while the model loads, then morph into it if this item is still showing
+      loadModelDots(item.id).then(() => { if (currentGear === item.id) setGear(item, false); }, (err) => console.warn("Gear model failed", err));
+    }
     const { H, D } = gearTerrain(item);
     setShape({ H, detail: D, top: 1000, ys: 0.13, snow: 0, contour: 1e6, trail: ZEROS, prog: ZEROS, route: false }, instant);
     faceFront = true;
     applyLayout();
     tilt = 0.85;   // stand the relief up toward the camera (≈15° short of face-on) so it reads like a product shot
     morph.gear1 = 1;
+    currentGear = item.id;
   }
   function setRoute(rt, instant) {
     const { H, top, trail, prog } = routeTerrain(rt);
@@ -437,6 +596,7 @@ async function createStage(canvas) {
     uniforms.uRoute.value = morph.route0 + (morph.route1 - morph.route0) * eT;
     uniforms.uGear.value = morph.gear0 + (morph.gear1 - morph.gear0) * eT;
     uniforms.uDim.value = morph.dim0 + (morph.dim1 - morph.dim0) * eT;
+    uniforms.uObj.value = morph.obj0 + (morph.obj1 - morph.obj0) * eT;
     geo.attributes.position.needsUpdate = true;
     geo.attributes.aElev.needsUpdate = true;
     geo.attributes.aH.needsUpdate = true;

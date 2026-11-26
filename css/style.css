@@ -108,6 +108,7 @@ em { font-family: var(--serif); font-style: italic; font-weight: 400; letter-spa
 .soon { color: var(--dim); }
 .soon i { font-style: normal; color: var(--accent); opacity: .65; }
 .intro { margin: 0; color: var(--fg); }
+.intro .credit { opacity: .65; }
 .settings { display: grid; gap: 8px; justify-items: end; }
 .langs { display: flex; gap: 12px; }
 .langs button { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; color: var(--dim); }

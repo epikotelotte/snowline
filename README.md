@@ -19,5 +19,14 @@ Then open http://localhost:5173. Sections: `#peaks` (default), `#routes`, `#gear
 - `js/i18n.js` — translations
 - `js/app.js` — the 3D stage (three.js) and interaction
 - `js/gearforms.js` — the dot-relief design for each gear product line
+- `data/terrain.bin`, `data/terrain.json` — real elevation grids for every peak, built by `tools/build_terrain.py`
+
+## Terrain data
+
+Peak terrain comes from the [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) open dataset (Mapzen Terrarium format), which combines SRTM, USGS 3DEP, GMTED2010, ETOPO1 and other public elevation sources. Rebuild it with:
+
+```bash
+/Applications/Blender.app/Contents/MacOS/Blender -b --factory-startup -P tools/build_terrain.py -- /tmp/terrain-tiles
+```
 
 Brand names are used as plain text only; no logos or product photos.
