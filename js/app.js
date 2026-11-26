@@ -273,9 +273,9 @@ function realRoute(r) {
   const relief = t.hi - t.lo, lat = t.lat;
   const line = snowLine(lat), snow = t.hi <= line ? 0 : Math.min(0.85, 1 - (line - t.lo) / relief);
   const out = {
-    H, trail, prog, top: t.hi, base: t.lo, band: t.band, snow,
+    H, trail, prog, top: t.hi, base: t.lo, band: Math.max(0.72, t.band), snow,
     // true proportions, exaggerated ×1.7 like the peaks, within limits (long trails are vast and flat)
-    ys: Math.min(0.5, Math.max(0.16, 1.7 * 2 * SPAN * relief / (2 * t.half * 1000))),
+    ys: Math.min(0.55, Math.max(0.3, 2.4 * 2 * SPAN * relief / (2 * t.half * 1000))),
     contour: relief < 400 ? 50 : relief < 1000 ? 100 : relief < 2500 ? 250 : 500
   };
   realRouteCache.set(r.id, out);
@@ -393,14 +393,15 @@ async function createStage(canvas) {
     uGear: { value: 0 },      // 1 = gear relief: wider edge fade so the whole object shows
     uDim: { value: 1 },       // overall point brightness
     uObj: { value: 0 },       // 1 = dots on a 3D gear model (shade by facing, glow at the silhouette)
-    uBand: { value: 0.65 }    // route: how deep the visible band is (0..1 of the grid), wide for loops
+    uBand: { value: 0.65 },   // route: how deep the visible band is (0..1 of the grid), wide for loops
+    uTrailIn: { value: 1 }    // route: the new trail fades in as its land rises
   };
   const mat = new THREE.ShaderMaterial({
     uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */`
       attribute float aElev; attribute float aH; attribute float aRand; attribute float aEdge;
       attribute float aTrail; attribute float aProg; attribute float aDetail; attribute vec3 aNormal;
-      uniform float uPR, uSize, uAspect, uContour, uSnow, uTime, uDist, uRoute, uWalk, uGear, uDim, uObj, uBand; uniform vec2 uMouse;
+      uniform float uPR, uSize, uAspect, uContour, uSnow, uTime, uDist, uRoute, uWalk, uGear, uDim, uObj, uBand, uTrailIn; uniform vec2 uMouse;
       varying vec3 vColor; varying float vAlpha;
 
       // Aurora palette, t in 0..1: green → teal → blue → violet → pink.
@@ -438,7 +439,7 @@ async function createStage(canvas) {
 
         // Route: the trail glows along its length; the stretch just walked is brighter,
         // and a white light marks the walker.
-        float tr = aTrail * uRoute;
+        float tr = aTrail * uRoute * uTrailIn;
         float behind = step(aProg, uWalk) * smoothstep(uWalk - 0.3, uWalk, aProg);
         float walker = tr * (1.0 - smoothstep(0.0, 0.014, abs(aProg - uWalk)));
         c = mix(c, aurora(aProg * 0.9 + 0.05) * (1.05 + behind * 0.7), tr);
@@ -507,6 +508,7 @@ async function createStage(canvas) {
     trailA.set(trail); progA.set(prog);
     geo.attributes.aTrail.needsUpdate = true;
     geo.attributes.aProg.needsUpdate = true;
+    const routeWas = routeMode;
     routeMode = route;
     spin = route ? 0.035 : 0.08;
     tilt = 0;
@@ -521,7 +523,8 @@ async function createStage(canvas) {
       gear0: uniforms.uGear.value, gear1: 0,
       dim0: uniforms.uDim.value, dim1: 1,
       obj0: uniforms.uObj.value, obj1: obj ? 1 : 0,
-      band0: uniforms.uBand.value, band1: band
+      band0: uniforms.uBand.value, band1: band,
+      dip: route && routeWas ? 0.22 : 0
     };
     currentGear = null;
   }
@@ -643,7 +646,7 @@ async function createStage(canvas) {
     const T = clamp01((now - morph.t0) / morph.dur);
     for (let k = 0; k < count; k++) {
       const e = easeInOut(clamp01((T - delay[k] * 0.4) / 0.6));
-      const lift = Math.sin(Math.PI * e) * 0.07 * (rand[k] - 0.25);
+      const lift = Math.sin(Math.PI * e) * (0.07 * (rand[k] - 0.25) - morph.dip);
       pos[k * 3] = from.x[k] + (to.x[k] - from.x[k]) * e;
       pos[k * 3 + 1] = from.y[k] + (to.y[k] - from.y[k]) * e + lift;
       pos[k * 3 + 2] = from.z[k] + (to.z[k] - from.z[k]) * e;
@@ -658,6 +661,7 @@ async function createStage(canvas) {
     uniforms.uDim.value = morph.dim0 + (morph.dim1 - morph.dim0) * eT;
     uniforms.uObj.value = morph.obj0 + (morph.obj1 - morph.obj0) * eT;
     uniforms.uBand.value = morph.band0 + (morph.band1 - morph.band0) * eT;
+    uniforms.uTrailIn.value = morph.dur <= 1 ? 1 : smooth(0.45, 0.9, T);
     geo.attributes.position.needsUpdate = true;
     geo.attributes.aElev.needsUpdate = true;
     geo.attributes.aH.needsUpdate = true;
